@@ -6,12 +6,18 @@ import httpx
 from elasticsearch import Elasticsearch
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from .agent import (
+    create_session,
+    add_user_message,
+    step as agent_step,
+    run as agent_run,
+    get_session as agent_get_session,
+    approve_pending,
+)
+from .tools import TOOLS_REGISTRY
+from .core import env, make_es, call_llm
 import threading
 import asyncio
-
-
-def env(name: str, default: Optional[str] = None) -> Optional[str]:
-    return os.environ.get(name, default)
 
 
 def make_consumer():
@@ -27,32 +33,6 @@ def make_consumer():
     }
     return Consumer(conf)
 
-
-def make_es() -> Elasticsearch:
-    return Elasticsearch(env("ELASTICSEARCH_URL", "http://elasticsearch:9200"))
-
-
-async def call_llm(prompt: str) -> str:
-    api_key = env("OPENAI_API_KEY")
-    base_url = env("OPENAI_BASE_URL", "https://api.openai.com/v1")
-    model = env("OPENAI_MODEL", "gpt-4o-mini")
-    if not api_key:
-        return (prompt[-300:]).strip()
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": "You are a SOC analyst. Write concise, actionable summaries."},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.2,
-        "max_tokens": 200,
-    }
-    async with httpx.AsyncClient(timeout=20.0, base_url=base_url) as client:
-        r = await client.post("/chat/completions", headers=headers, json=payload)
-        r.raise_for_status()
-        data = r.json()
-        return data["choices"][0]["message"]["content"].strip()
 
 
 def build_prompt(alert: Dict[str, Any]) -> str:
@@ -218,6 +198,69 @@ def analyze(req: AnalyzeRequest) -> dict:
             "message": src.get("message") or src.get("event", {}).get("original") or src.get("raw_text"),
         })
     return {"dsl": body, "total": total, "insights": insights, "samples": samples}
+
+
+# --- Agent endpoints ---
+
+
+class CreateSessionRequest(BaseModel):
+    approval_mode: Optional[str] = None  # "auto" or "manual"
+
+
+@app.post("/agent/session")
+def agent_session_create(req: CreateSessionRequest) -> dict:
+    s = create_session(req.approval_mode)
+    return {"session": s.to_dict()}
+
+
+class PostMessageRequest(BaseModel):
+    content: str
+
+
+@app.post("/agent/{session_id}/message")
+def agent_post_message(session_id: str, req: PostMessageRequest) -> dict:
+    s = add_user_message(session_id, req.content)
+    return {"session": s.to_dict()}
+
+
+@app.get("/agent/tools")
+def agent_list_tools() -> dict:
+    tools = {k: {"description": v.get("description"), "schema": v.get("schema")} for k, v in TOOLS_REGISTRY.items()}
+    return {"tools": tools}
+
+
+@app.get("/agent/{session_id}")
+def agent_get_state(session_id: str) -> dict:
+    s = agent_get_session(session_id)
+    return {"session": s.to_dict()}
+
+
+@app.post("/agent/{session_id}/step")
+def agent_step_once(session_id: str) -> dict:
+    try:
+        return agent_step(session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="session not found")
+
+
+class RunRequest(BaseModel):
+    max_steps: Optional[int] = 5
+
+
+@app.post("/agent/{session_id}/run")
+def agent_run_loop(session_id: str, req: RunRequest) -> dict:
+    try:
+        return agent_run(session_id, max_steps=int(req.max_steps or 5))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="session not found")
+
+
+@app.post("/agent/{session_id}/approve")
+def agent_approve(session_id: str) -> dict:
+    try:
+        return approve_pending(session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="session not found")
 
 
 def main() -> None:

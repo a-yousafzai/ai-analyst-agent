@@ -7,5 +7,5 @@ services:
       - RUN_MODE=api
       - ELASTICSEARCH_URL=http://localhost:9200
     ports:
-      - "8080:8080"
+      - "8081:8080"
 
