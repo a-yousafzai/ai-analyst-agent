@@ -20,3 +20,4 @@ ANALYZE_ALLOW_PARTIAL=1 python -m pytest -q tests/test_agent.py
 - `ai_analyst/app.py`: FastAPI API + RUN_MODE switch (api/consumer/both)
 - `ai_analyst/requirements.txt`: Python dependencies
 - `tests/test_agent.py`: Contract and integration-style tests
+
