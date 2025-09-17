@@ -1,0 +1,10 @@
+version: '3'
+
+services:
+  api:
+    build: ./ai_analyst
+    environment:
+      - RUN_MODE=api
+      - ELASTICSEARCH_URL=http://localhost:9200
+    ports:
+      - "8080:8080"
